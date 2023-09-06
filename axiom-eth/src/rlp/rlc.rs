@@ -2,6 +2,9 @@ use crate::halo2_proofs::{
     plonk::{Advice, Challenge, Column, ConstraintSystem, FirstPhase, SecondPhase, Selector},
     poly::Rotation,
 };
+use ethers_core::k256::elliptic_curve::{
+    bigint::modular::constant_mod::ResidueParams, generic_array::arr::AddLength,
+};
 use halo2_base::{
     gates::GateInstructions,
     utils::{bit_length, ScalarField},
@@ -191,6 +194,47 @@ impl<F: ScalarField> RlcChip<F> {
         } else {
             RlcFixedTrace { rlc_val: ctx_rlc.load_zero(), len: 0 }
         }
+    }
+
+    /// Computes the "left-aligned" RLC of `inputs`. The significant (typically nonzero) elements of the
+    /// input array are indicated with an indicator array `indicator`. The resulting RLC is calculated for the array
+    /// where all significant elements are pushed to the left.
+    ///
+    /// For example, for the array [1,0,0,2] with index array [1,0,0,1], the "left-aligned" array is [1,2,0,0], and
+    /// the "left-aligned" RLC is g^3 + 2g^2.
+    ///
+    /// Assumes
+    /// * `0 <= len <= max_len`.
+    /// * inputs.len() == indices.len()
+    /// * `indicator` is a boolean array
+    /// * all insignificant elements of `inputs` are zero
+    pub fn compute_rlc_left_aligned(
+        &self,
+        (ctx_gate, ctx_rlc): RlcContextPair<F>,
+        gate: &impl GateInstructions<F>,
+        inputs: impl IntoIterator<Item = AssignedValue<F>>,
+        indicator: impl IntoIterator<Item = AssignedValue<F>>,
+        len: AssignedValue<F>,
+    ) -> RlcTrace<F> {
+        let inputs = inputs.into_iter();
+        let indicator = indicator.into_iter();
+        let is_zero = gate.is_zero(ctx_gate, len);
+
+        let mut max_len: usize = 0;
+
+        let mut rlc = ctx_gate.load_zero();
+        let gamma = self.load_gamma(ctx_rlc, *self.gamma());
+        let gamma_minus_one = gate.sub(ctx_gate, gamma, Constant(F::one()));
+
+        for (a, i) in inputs.zip(indicator) {
+            max_len += 1;
+            let intermediate = gate.mul_add(ctx_gate, i, gamma_minus_one, Constant(F::one()));
+            rlc = gate.mul_add(ctx_gate, rlc, intermediate, a);
+        }
+
+        let rlc_val = gate.mul_not(ctx_gate, is_zero, rlc);
+
+        RlcTrace { rlc_val, len, max_len }
     }
 
     /// Define the dynamic RLC: RLC(a, l) = \sum_{i = 0}^{l - 1} a_i r^{l - 1 - i}

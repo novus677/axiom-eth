@@ -83,6 +83,42 @@ mod rlc {
         rlc
     }
 
+    fn rlc_test_circuit_2<F: ScalarField>(
+        mut builder: RlcThreadBuilder<F>,
+        _inputs: Vec<F>,
+        _indicator: Vec<F>,
+        _len: usize,
+    ) -> RlcCircuitBuilder<F, impl FnSynthesize<F>> {
+        let ctx = builder.gate_builder.main(0);
+        let inputs = ctx.assign_witnesses(_inputs.clone());
+        let indicator = ctx.assign_witnesses(_indicator.clone());
+        let len = ctx.load_witness(F::from(_len as u64));
+
+        let synthesize_phase1 = move |builder: &mut RlcThreadBuilder<F>, rlc: &RlcChip<F>| {
+            log::info!("phase 1 synthesize begin");
+            let gate = GateChip::default();
+
+            let (ctx_gate, ctx_rlc) = builder.rlc_ctx_pair();
+            let rlc_trace =
+                rlc.compute_rlc_left_aligned((ctx_gate, ctx_rlc), &gate, inputs, indicator, len);
+            let rlc_val = *rlc_trace.rlc_val.value();
+            let real_rlc = compute_rlc_acc_2(&_inputs[.._len], &_indicator[.._len], *rlc.gamma());
+            assert_eq!(real_rlc, rlc_val);
+        };
+
+        RlcCircuitBuilder::new(builder, None, synthesize_phase1)
+    }
+
+    fn compute_rlc_acc_2<F: ScalarField>(msg: &[F], msg_ind: &[F], r: F) -> F {
+        let mut rlc = F::zero();
+        for (&val, &ind) in msg.iter().zip(msg_ind.iter()) {
+            if ind == F::one() {
+                rlc = rlc * r + val;
+            }
+        }
+        rlc
+    }
+
     #[test]
     pub fn test_mock_rlc() {
         let k = DEGREE;
@@ -98,6 +134,21 @@ mod rlc {
         let circuit = rlc_test_circuit(RlcThreadBuilder::mock(), input_bytes, len);
 
         circuit.config(k as usize, Some(6));
+        MockProver::run(k, &circuit, vec![]).unwrap().assert_satisfied();
+    }
+
+    #[test]
+    pub fn test_mock_rlc_left_aligned() {
+        let k = DEGREE;
+        let input_bytes =
+            vec![0, 0, 1, 0, 1, 0].into_iter().map(|x| Fr::from(x as u64)).collect_vec();
+        let indicator_bytes =
+            vec![0, 0, 1, 0, 1, 0].into_iter().map(|x| Fr::from(x as u64)).collect_vec();
+        let len = 6;
+
+        let circuit =
+            rlc_test_circuit_2(RlcThreadBuilder::mock(), input_bytes, indicator_bytes, len);
+        circuit.config(k as usize, Some(3));
         MockProver::run(k, &circuit, vec![]).unwrap().assert_satisfied();
     }
 
